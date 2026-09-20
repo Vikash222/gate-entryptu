@@ -1,0 +1,27 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+vendor/
+
+# Laravel
+backend/storage/logs/*
+backend/storage/framework/cache/*
+backend/storage/framework/sessions/*
+backend/storage/framework/views/*
+backend/bootstrap/cache/*
+
+# Frontend build
+frontend/dist/
+frontend/.vite/
+
+# Archives
+*.zip
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/

@@ -1,0 +1,16 @@
+{
+  "name": "SmartGate - University Entry & Exit System",
+  "short_name": "SmartGate",
+  "description": "University Student Gate Entry & Exit Management System",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml"
+    }
+  ]
+}
