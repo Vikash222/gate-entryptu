@@ -132,46 +132,6 @@ To **change an existing Admin's email or password** at any time:
 
 ---
 
-### Method 3: Changing via the Seeder File
-
-If you are setting up or re-seeding a development database, you can customize the admin credentials directly in the code:
-
-- **File Path**: `backend/database/seeders/DevelopmentDatabaseSeeder.php`
-- **Lines 24–33**:
-  ```php
-  // 1. Synthetic Admin for dev testing
-  $adminEmail = 'admin.dev@test.local'; // <-- Change default email here
-  $admin = User::firstOrCreate(
-      ['email' => $adminEmail],
-      [
-          'name' => 'Development Administrator',
-          'password' => Hash::make('DevAdminPassword123!'), // <-- Change default password here
-          'role' => User::ROLE_ADMIN,
-          'status' => User::STATUS_ACTIVE,
-      ]
-  );
-  ```
-To run the seeder:
-```bash
-cd backend
-php artisan db:seed --class=DevelopmentDatabaseSeeder
-```
-
----
-
-### Method 4: Direct Database SQL Update
-
-If you have direct access to your database GUI (phpMyAdmin, TablePlus, DBeaver, or MySQL CLI):
-
-```sql
--- Update password to 'NewPassword123!' for the admin
-UPDATE users 
-SET password = '$2y$12$e8Y5qY7gC6/q8a21uAovG.bQo8f1lC0vFhDkP3gY9q8j7f4e9zGae'
-WHERE role = 'ADMIN' AND email = 'admin@ptu.ac.in';
-```
-*(Note: Passwords must be hashed with Bcrypt before storing in MySQL. Use Method 1 or Method 2 for automatic hashing.)*
-
----
 
 ## How to Add Security Guards & Gates
 
