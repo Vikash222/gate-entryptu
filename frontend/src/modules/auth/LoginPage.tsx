@@ -16,10 +16,20 @@ export const LoginPage: React.FC = () => {
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [sessionExpiredMessage, setSessionExpiredMessage] = useState<string | null>(() => {
+    return sessionStorage.getItem('smartgate_session_expired_message');
+  });
+
+  React.useEffect(() => {
+    if (sessionExpiredMessage) {
+      sessionStorage.removeItem('smartgate_session_expired_message');
+    }
+  }, [sessionExpiredMessage]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
+    setSessionExpiredMessage(null);
     setIsLoading(true);
 
     try {
@@ -43,7 +53,7 @@ export const LoginPage: React.FC = () => {
       }
 
       if (data.token && data.user) {
-        login(data.token, data.user);
+        login(data.token, data.user, data.session_expires_at);
 
         // Role-based routing
         if (data.user.role === 'STUDENT') {
@@ -82,6 +92,12 @@ export const LoginPage: React.FC = () => {
             <h2 className="text-xl font-bold text-slate-900">Sign In</h2>
             <p className="text-xs text-slate-500 mt-1">Enter your university credentials to access the gate system</p>
           </div>
+
+          {sessionExpiredMessage && (
+            <div className="mb-6">
+              <Alert type="warning" message={sessionExpiredMessage} />
+            </div>
+          )}
 
           {errorMessage && (
             <div className="mb-6">

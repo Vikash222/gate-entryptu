@@ -13,11 +13,15 @@ use App\Models\Student;
 use App\Models\User;
 use App\Services\AuditService;
 use App\Services\DutySessionService;
+use App\Services\ExcelExportService;
+use App\Services\MovementQueryService;
+use App\Services\ProfilePhotoService;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class AdminController extends Controller
@@ -26,7 +30,10 @@ class AdminController extends Controller
 
     public function __construct(
         protected DutySessionService $dutySessionService,
-        protected AuditService $auditService
+        protected AuditService $auditService,
+        protected MovementQueryService $movementQueryService,
+        protected ExcelExportService $excelExportService,
+        protected ProfilePhotoService $profilePhotoService
     ) {}
 
     /**
@@ -37,32 +44,44 @@ class AdminController extends Controller
         $todayStart = Carbon::now('Asia/Kolkata')->startOfDay();
         $todayEnd = Carbon::now('Asia/Kolkata')->endOfDay();
 
-        $studentsInside = Student::where('current_status', Student::STATE_INSIDE)->count();
-        $studentsOutside = Student::where('current_status', Student::STATE_OUTSIDE)->count();
+        // 1. Single aggregate query for student presence status counts
+        $studentCounts = Student::selectRaw("
+            COUNT(CASE WHEN current_status = ? THEN 1 END) as inside_count,
+            COUNT(CASE WHEN current_status = ? THEN 1 END) as outside_count
+        ", [Student::STATE_INSIDE, Student::STATE_OUTSIDE])->first();
 
-        $todayIn = Movement::whereBetween('server_timestamp', [$todayStart, $todayEnd])
-            ->where('type', Movement::TYPE_IN)
-            ->count();
+        $studentsInside = (int) ($studentCounts->inside_count ?? 0);
+        $studentsOutside = (int) ($studentCounts->outside_count ?? 0);
 
-        $todayOut = Movement::whereBetween('server_timestamp', [$todayStart, $todayEnd])
-            ->where('type', Movement::TYPE_OUT)
-            ->count();
-
+        // 2. Active duty sessions (eager loaded)
         $activeDutySessions = SecurityDutySession::with(['user', 'gate'])
             ->where('status', SecurityDutySession::STATUS_ACTIVE)
             ->get();
 
+        // 3. Single aggregated query for today's movements across all gates (eliminates 2N queries)
+        $movementAggregates = Movement::whereBetween('server_timestamp', [$todayStart, $todayEnd])
+            ->selectRaw("
+                gate_id,
+                COUNT(CASE WHEN type = ? THEN 1 END) as in_cnt,
+                COUNT(CASE WHEN type = ? THEN 1 END) as out_cnt
+            ", [Movement::TYPE_IN, Movement::TYPE_OUT])
+            ->groupBy('gate_id')
+            ->get()
+            ->keyBy('gate_id');
+
+        $todayIn = 0;
+        $todayOut = 0;
+        foreach ($movementAggregates as $agg) {
+            $todayIn += (int) $agg->in_cnt;
+            $todayOut += (int) $agg->out_cnt;
+        }
+
         $gates = Gate::all();
         $gateStats = [];
         foreach ($gates as $g) {
-            $gateIn = Movement::where('gate_id', $g->id)
-                ->whereBetween('server_timestamp', [$todayStart, $todayEnd])
-                ->where('type', Movement::TYPE_IN)
-                ->count();
-            $gateOut = Movement::where('gate_id', $g->id)
-                ->whereBetween('server_timestamp', [$todayStart, $todayEnd])
-                ->where('type', Movement::TYPE_OUT)
-                ->count();
+            $gateAgg = $movementAggregates->get($g->id);
+            $gateIn = (int) ($gateAgg->in_cnt ?? 0);
+            $gateOut = (int) ($gateAgg->out_cnt ?? 0);
 
             $gateStats[] = [
                 'id' => $g->id,
@@ -118,7 +137,22 @@ class AdminController extends Controller
             $query->where('current_status', $request->current_status);
         }
 
+        if ($request->has('category') && !empty($request->category)) {
+            $cat = $request->category;
+            $query->where(function ($sub) use ($cat) {
+                $sub->where('category', $cat)->orWhere('student_type', $cat);
+            });
+        }
+
+        if ($request->has('student_type') && !empty($request->student_type)) {
+            $st = $request->student_type;
+            $query->where(function ($sub) use ($st) {
+                $sub->where('student_type', $st)->orWhere('category', $st);
+            });
+        }
+
         $students = $query->orderByDesc('id')->paginate(25);
+        $students->getCollection()->each->append('profile_photo_url');
 
         return $this->success($students, 'Students retrieved.');
     }
@@ -134,6 +168,8 @@ class AdminController extends Controller
             'password' => ['required', 'string', 'min:8'],
             'student_id' => ['required', 'string', 'max:50', 'unique:students,student_id'],
             'roll_number' => ['required', 'string', 'max:50', 'unique:students,roll_number'],
+            'category' => ['nullable', 'string', 'in:HOSTELER,HOSTELLER,DAY_SCHOLAR'],
+            'student_type' => ['nullable', 'string', 'in:HOSTELLER,DAY_SCHOLAR'],
             'phone_number' => ['nullable', 'string', 'max:30'],
             'program' => ['nullable', 'string', 'max:100'],
             'department' => ['nullable', 'string', 'max:100'],
@@ -142,7 +178,9 @@ class AdminController extends Controller
             'batch' => ['nullable', 'string', 'max:50'],
         ]);
 
-        return DB::transaction(function () use ($validated, $request) {
+        $studentType = $validated['student_type'] ?? ($validated['category'] === 'DAY_SCHOLAR' ? 'DAY_SCHOLAR' : 'HOSTELLER');
+
+        return DB::transaction(function () use ($validated, $studentType, $request) {
             $user = User::create([
                 'name' => $validated['name'],
                 'email' => $validated['email'],
@@ -157,6 +195,8 @@ class AdminController extends Controller
                 'roll_number' => $validated['roll_number'],
                 'name' => $validated['name'],
                 'email' => $validated['email'],
+                'student_type' => $studentType,
+                'category' => ($studentType === 'DAY_SCHOLAR') ? Student::CATEGORY_DAY_SCHOLAR : Student::CATEGORY_HOSTELER,
                 'phone_number' => $validated['phone_number'] ?? null,
                 'program' => $validated['program'] ?? null,
                 'department' => $validated['department'] ?? null,
@@ -174,6 +214,8 @@ class AdminController extends Controller
                 metadata: [
                     'student_id' => $student->student_id,
                     'roll_number' => $student->roll_number,
+                    'student_type' => $student->student_type,
+                    'category' => $student->category,
                 ],
                 entityType: Student::class,
                 entityId: (string) $student->id,
@@ -185,11 +227,90 @@ class AdminController extends Controller
     }
 
     /**
+     * Update student administrative record (category, student_type, contact info, academic details).
+     */
+    public function updateStudent(Request $request, Student $student): JsonResponse
+    {
+        $validated = $request->validate([
+            'category' => ['nullable', 'string', 'in:HOSTELER,HOSTELLER,DAY_SCHOLAR'],
+            'student_type' => ['nullable', 'string', 'in:HOSTELLER,DAY_SCHOLAR'],
+            'phone_number' => ['nullable', 'string', 'max:30'],
+            'program' => ['nullable', 'string', 'max:100'],
+            'department' => ['nullable', 'string', 'max:100'],
+            'year' => ['nullable', 'integer', 'min:1', 'max:6'],
+            'semester' => ['nullable', 'integer', 'min:1', 'max:12'],
+            'batch' => ['nullable', 'string', 'max:50'],
+        ]);
+
+        $student->update(array_filter($validated, fn ($v) => $v !== null));
+
+        return $this->success($student->fresh(), 'Student updated successfully.');
+    }
+
+    /**
+     * Upload or update a student's profile photo as an administrator.
+     */
+    public function uploadStudentPhoto(Request $request, Student $student): JsonResponse
+    {
+        $file = $request->file('profile_photo') ?? $request->file('photo');
+        if (!$file) {
+            return $this->error('Please provide a profile photo file.', null, 422);
+        }
+
+        try {
+            $this->profilePhotoService->processAndStore(
+                file: $file,
+                student: $student,
+                actor: $request->user()
+            );
+
+            $student->refresh()->append('profile_photo_url');
+
+            return $this->success([
+                'profile_photo' => $student->profile_photo,
+                'profile_photo_url' => $student->profile_photo_url,
+                'student' => $student,
+            ], 'Student profile photo uploaded successfully.');
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            throw $e;
+        } catch (\InvalidArgumentException $e) {
+            return $this->error($e->getMessage(), null, 422);
+        } catch (\Throwable $e) {
+            return $this->error('Failed to process student photo: ' . $e->getMessage(), null, 500);
+        }
+    }
+
+    /**
+     * Remove a student's profile photo as an administrator.
+     */
+    public function deleteStudentPhoto(Request $request, Student $student): JsonResponse
+    {
+        try {
+            $this->profilePhotoService->deletePhoto(
+                student: $student,
+                actor: $request->user()
+            );
+
+            $student->refresh()->append('profile_photo_url');
+
+            return $this->success([
+                'profile_photo' => null,
+                'profile_photo_url' => null,
+                'student' => $student,
+            ], 'Student profile photo removed successfully.');
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            return $this->error('Failed to remove student photo: ' . $e->getMessage(), null, 500);
+        }
+    }
+
+    /**
      * View full student details for administrative verification.
      */
     public function showStudent(Student $student): JsonResponse
     {
-        $student->load(['user', 'lastGate']);
+        $student->load(['user', 'lastGate'])->append('profile_photo_url');
         return $this->success($student, 'Student details retrieved.');
     }
 
@@ -216,6 +337,13 @@ class AdminController extends Controller
                 user: $request->user()
             );
         });
+
+        try {
+            $student->loadMissing('user');
+            event(new \App\Events\StudentStatusChanged('APPROVED', $student, $request->user()));
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('StudentStatusChanged event error: ' . $e->getMessage());
+        }
 
         return $this->success($student->fresh(), 'Student approved successfully. Gate entry access is now active.');
     }
@@ -244,6 +372,13 @@ class AdminController extends Controller
             );
         });
 
+        try {
+            $student->loadMissing('user');
+            event(new \App\Events\StudentStatusChanged('REJECTED', $student, $request->user()));
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('StudentStatusChanged event error: ' . $e->getMessage());
+        }
+
         return $this->success($student->fresh(), 'Student registration rejected.');
     }
 
@@ -271,6 +406,13 @@ class AdminController extends Controller
             );
         });
 
+        try {
+            $student->loadMissing('user');
+            event(new \App\Events\StudentStatusChanged('SUSPENDED', $student, $request->user()));
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('StudentStatusChanged event error: ' . $e->getMessage());
+        }
+
         return $this->success($student->fresh(), 'Student account suspended. Gate access immediately revoked.');
     }
 
@@ -297,6 +439,13 @@ class AdminController extends Controller
                 user: $request->user()
             );
         });
+
+        try {
+            $student->loadMissing('user');
+            event(new \App\Events\StudentStatusChanged('REACTIVATED', $student, $request->user()));
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('StudentStatusChanged event error: ' . $e->getMessage());
+        }
 
         return $this->success($student->fresh(), 'Student account reactivated. Gate access restored.');
     }
@@ -472,111 +621,71 @@ class AdminController extends Controller
      */
     public function movements(Request $request): JsonResponse
     {
-        $oneYearLimit = Carbon::now('Asia/Kolkata')->subYear()->startOfDay();
-
-        $query = Movement::with(['student', 'gate', 'securityUser'])
-            ->where('server_timestamp', '>=', $oneYearLimit); // 1-year boundary
-
-        if ($request->has('gate_id') && !empty($request->gate_id)) {
-            $query->where('gate_id', $request->gate_id);
+        $perPage = min((int) $request->input('per_page', 30), 100);
+        if ($perPage < 1) {
+            $perPage = 30;
         }
 
-        if ($request->has('type') && in_array(strtoupper($request->type), ['IN', 'OUT'])) {
-            $query->where('type', strtoupper($request->type));
-        }
-
-        if ($request->has('start_date') && !empty($request->start_date)) {
-            $start = Carbon::parse($request->start_date, 'Asia/Kolkata')->startOfDay();
-            $query->where('server_timestamp', '>=', $start);
-        }
-
-        if ($request->has('end_date') && !empty($request->end_date)) {
-            $end = Carbon::parse($request->end_date, 'Asia/Kolkata')->endOfDay();
-            $query->where('server_timestamp', '<=', $end);
-        }
-
-        if ($request->has('destination') && !empty($request->destination)) {
-            $query->where('destination', $request->destination);
-        }
-
-        if ($request->has('purpose') && !empty($request->purpose)) {
-            $query->where('purpose', $request->purpose);
-        }
-
-        if ($request->has('vehicle_present') && $request->vehicle_present !== '') {
-            $query->where('vehicle_present', filter_var($request->vehicle_present, FILTER_VALIDATE_BOOLEAN));
-        }
-
-        if ($request->has('search') && !empty($request->search)) {
-            $search = trim($request->search);
-            $query->where(function ($sub) use ($search) {
-                $sub->where('verification_code', 'LIKE', "%{$search}%")
-                    ->orWhere('vehicle_number', 'LIKE', "%{$search}%")
-                    ->orWhereHas('student', function ($sq) use ($search) {
-                        $sq->where('roll_number', 'LIKE', "%{$search}%")
-                            ->orWhere('name', 'LIKE', "%{$search}%")
-                            ->orWhere('student_id', 'LIKE', "%{$search}%");
-                    });
-            });
-        }
-
-        $movements = $query->orderByDesc('server_timestamp')->paginate(30);
+        $query = $this->movementQueryService->buildQuery($request)->orderByDesc('server_timestamp');
+        $movements = $query->paginate($perPage);
+        $movements->getCollection()->each(fn ($m) => $m->student?->append('profile_photo_url'));
 
         return $this->success($movements, '1-year movement logs retrieved.');
     }
 
     /**
-     * Export movements to CSV.
+     * Export movements dataset as XLSX (default) or CSV.
+     * Enforces identical filter pipeline and creates ADMIN_MOVEMENT_EXPORT audit log.
      */
-    public function exportMovementsCsv(Request $request): StreamedResponse
+    public function exportMovements(Request $request): BinaryFileResponse|StreamedResponse
     {
-        $oneYearLimit = Carbon::now('Asia/Kolkata')->subYear()->startOfDay();
+        $format = strtolower($request->query('format', 'xlsx'));
+        $query = $this->movementQueryService->buildQuery($request)->orderByDesc('server_timestamp');
 
-        $query = Movement::with(['student', 'gate'])
-            ->where('server_timestamp', '>=', $oneYearLimit)
-            ->orderByDesc('server_timestamp');
+        if ($format === 'csv') {
+            return $this->excelExportService->exportCsv(
+                query: $query,
+                filters: $request->all(),
+                adminUser: $request->user(),
+                ip: $request->ip(),
+                userAgent: $request->header('User-Agent')
+            );
+        }
 
-        $headers = [
-            'Content-Type' => 'text/csv',
-            'Content-Disposition' => 'attachment; filename="smartgate-movements-' . date('Y-m-d') . '.csv"',
-        ];
+        return $this->excelExportService->exportXlsx(
+            query: $query,
+            filters: $request->all(),
+            adminUser: $request->user(),
+            ip: $request->ip(),
+            userAgent: $request->header('User-Agent')
+        );
+    }
 
-        return response()->stream(function () use ($query) {
-            $handle = fopen('php://output', 'w');
-            fputcsv($handle, [
-                'Verification Code',
-                'Movement Type',
-                'Student Name',
-                'Roll Number',
-                'Student ID',
-                'Gate',
-                'Destination',
-                'Purpose',
-                'In Vehicle',
-                'Vehicle Number',
-                'Server Timestamp (IST)',
-            ]);
+    /**
+     * Legacy CSV export alias for backward compatibility.
+     */
+    public function exportMovementsCsv(Request $request): StreamedResponse|BinaryFileResponse
+    {
+        $request->merge(['format' => $request->query('format', 'csv')]);
+        return $this->exportMovements($request);
+    }
 
-            $query->chunk(200, function ($records) use ($handle) {
-                foreach ($records as $m) {
-                    fputcsv($handle, [
-                        $m->verification_code,
-                        $m->type,
-                        $m->student?->name ?? 'N/A',
-                        $m->student?->roll_number ?? 'N/A',
-                        $m->student?->student_id ?? 'N/A',
-                        $m->gate?->name ?? 'N/A',
-                        $m->destination ?? '-',
-                        $m->purpose ?? '-',
-                        $m->vehicle_present ? 'YES' : 'NO',
-                        $m->vehicle_number ?? '-',
-                        $m->server_timestamp->format('Y-m-d H:i:s'),
-                    ]);
-                }
-            });
+    /**
+     * Generate comprehensive Movement Analytics Report on the filtered dataset.
+     */
+    public function movementReports(Request $request): JsonResponse
+    {
+        $analytics = $this->movementQueryService->getAnalytics($request);
+        return $this->success($analytics, 'Movement analytics report generated.');
+    }
 
-            fclose($handle);
-        }, 200, $headers);
+    /**
+     * Generate detailed student-specific movement & late-entry report.
+     */
+    public function studentReport(Request $request, Student $student): JsonResponse
+    {
+        $report = $this->movementQueryService->getStudentReport($student->id, $request);
+        return $this->success($report, 'Student movement report generated.');
     }
 
     /**

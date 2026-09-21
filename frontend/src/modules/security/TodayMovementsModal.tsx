@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Calendar, RefreshCw } from 'lucide-react';
+import { Calendar, RefreshCw, AlertTriangle } from 'lucide-react';
 import { Modal } from '../../components/ui/Modal';
 import { Button } from '../../components/ui/Button';
+import { Avatar } from '../../components/ui/Avatar';
 import { apiClient, getErrorMessage } from '../../api/client';
 import type { ApiResponse, Movement } from '../../types';
 
@@ -46,25 +47,27 @@ export const TodayMovementsModal: React.FC<TodayMovementsModalProps> = ({
       onClose={onClose}
       title={
         <div className="flex items-center gap-2">
-          <Calendar className="h-5 w-5 text-blue-600" />
-          <span>Today's Movements</span>
+          <Calendar className="h-5 w-5 text-emerald-600" />
+          <span className="text-base font-black text-slate-900">Today's Gate Movements</span>
         </div>
       }
-      description="Newest gate activity recorded today across university gates"
+      description="Live ledger of movements recorded at this gate location today"
       size="lg"
     >
       <div className="space-y-4 pt-1 text-left">
-        <div className="flex justify-between items-center">
-          <span className="text-xs font-bold text-slate-500">{movements.length} Total Today</span>
-          <button
-            type="button"
+        <div className="flex justify-between items-center text-xs">
+          <span className="text-slate-500 font-mono">
+            Total records: <strong className="text-slate-900">{movements.length}</strong>
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={fetchToday}
-            disabled={isLoading}
-            className="p-1.5 text-slate-500 hover:text-blue-600 rounded-lg hover:bg-slate-100 transition"
-            title="Refresh"
+            isLoading={isLoading}
+            className="text-xs text-blue-600"
           >
-            <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin text-blue-600' : ''}`} />
-          </button>
+            <RefreshCw className="h-3 w-3 mr-1" /> Refresh
+          </Button>
         </div>
 
         {errorMessage && <p className="text-xs text-rose-600">{errorMessage}</p>}
@@ -77,19 +80,34 @@ export const TodayMovementsModal: React.FC<TodayMovementsModalProps> = ({
           ) : (
             movements.map((m) => (
               <div key={m.id} className="py-3 flex items-center justify-between text-xs">
-                <div>
-                  <h5 className="font-bold text-slate-900">{m.student?.name || 'Student'}</h5>
-                  <p className="text-[11px] text-slate-500 font-mono">
-                    {m.student?.roll_number || 'N/A'} &bull; {m.gate?.name}
-                  </p>
-                  {m.type === 'OUT' && (
-                    <p className="text-[10px] text-slate-400 mt-0.5">
-                      To: <span className="text-slate-600 font-medium">{m.destination || '-'}</span>
-                      {m.vehicle_present && (
-                        <span className="ml-1.5 font-mono text-blue-600">[{m.vehicle_number}]</span>
+                <div className="flex items-center gap-2.5">
+                  <Avatar
+                    src={m.student?.profile_photo_url}
+                    name={m.student?.name || 'Student'}
+                    size="md"
+                    shape="rounded"
+                  />
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <h5 className="font-bold text-slate-900">{m.student?.name || 'Student'}</h5>
+                      {m.student?.category === 'DAY_SCHOLAR' && (
+                        <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-purple-100 text-purple-700 border border-purple-200">
+                          Day Scholar
+                        </span>
                       )}
+                    </div>
+                    <p className="text-[11px] text-slate-500 font-mono">
+                      {m.student?.roll_number || 'N/A'} &bull; {m.gate?.name}
                     </p>
-                  )}
+                    {m.type === 'OUT' && (
+                      <p className="text-[10px] text-slate-400 mt-0.5">
+                        To: <span className="text-slate-600 font-medium">{m.destination || '-'}</span>
+                        {m.vehicle_present && (
+                          <span className="ml-1.5 font-mono text-blue-600">[{m.vehicle_number}]</span>
+                        )}
+                      </p>
+                    )}
+                  </div>
                 </div>
 
                 <div className="text-right flex flex-col items-end gap-1">
@@ -102,6 +120,12 @@ export const TodayMovementsModal: React.FC<TodayMovementsModalProps> = ({
                   >
                     {m.type === 'IN' ? '🟢 IN' : '🔴 OUT'}
                   </span>
+                  {m.day_scholar_after_hours && (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded bg-rose-100 text-rose-800 font-bold text-[9px] border border-rose-300">
+                      <AlertTriangle className="h-2.5 w-2.5 text-rose-600" />
+                      AFTER HOURS
+                    </span>
+                  )}
                   <span className="text-[10px] text-slate-400 font-mono">
                     {new Date(m.server_timestamp).toLocaleTimeString([], {
                       hour: '2-digit',

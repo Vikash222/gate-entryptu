@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Api\v1;
 
 use App\Http\Controllers\Controller;
 use App\Http\Responses\ApiResponse;
+use App\Models\Student;
+use App\Services\ProfilePhotoService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -11,12 +13,17 @@ class StudentController extends Controller
 {
     use ApiResponse;
 
+    public function __construct(
+        protected ProfilePhotoService $profilePhotoService
+    ) {}
+
     /**
      * Get the authenticated student's profile.
      */
     public function profile(Request $request): JsonResponse
     {
         $user = $request->user();
+        $user->loadMissing('student.lastGate');
         $student = $user->student;
 
         if (!$student) {
@@ -35,7 +42,10 @@ class StudentController extends Controller
             'department' => $student->department,
             'semester' => $student->semester,
             'batch' => $student->batch,
+            'category' => $student->category ?? Student::CATEGORY_HOSTELER,
+            'student_type' => $student->student_type,
             'profile_photo' => $student->profile_photo,
+            'profile_photo_url' => $student->profile_photo_url,
             'status' => $student->status,
             'current_status' => $student->current_status,
             'last_movement_at' => $student->last_movement_at?->toIso8601String(),
@@ -53,6 +63,7 @@ class StudentController extends Controller
     public function status(Request $request): JsonResponse
     {
         $user = $request->user();
+        $user->loadMissing('student.lastGate');
         $student = $user->student;
 
         if (!$student) {
@@ -110,5 +121,51 @@ class StudentController extends Controller
         $student->update(array_filter($validated, fn ($val) => $val !== null));
 
         return $this->success($student->fresh(), 'Profile updated successfully.');
+    }
+
+    /**
+     * Upload or replace student profile photo.
+     * Enforces 100 KB hard limit, safe dimensions, and secure private storage.
+     */
+    public function uploadPhoto(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $student = $user->student;
+
+        if (!$student) {
+            return $this->notFound('Student record not found.');
+        }
+
+        $request->validate([
+            'profile_photo' => ['required', 'file'],
+        ], [
+            'profile_photo.required' => 'Please select a profile photo to upload.',
+            'profile_photo.file' => 'The uploaded file is invalid.',
+        ]);
+
+        $this->profilePhotoService->processAndStore(
+            file: $request->file('profile_photo'),
+            student: $student,
+            actor: $user
+        );
+
+        return $this->success($student->fresh(), 'Profile photo uploaded successfully.');
+    }
+
+    /**
+     * Delete student profile photo.
+     */
+    public function deletePhoto(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $student = $user->student;
+
+        if (!$student) {
+            return $this->notFound('Student record not found.');
+        }
+
+        $this->profilePhotoService->deletePhoto($student, $user);
+
+        return $this->success($student->fresh(), 'Profile photo removed successfully.');
     }
 }

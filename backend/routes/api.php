@@ -20,6 +20,7 @@ Route::prefix('v1')->group(function () {
         // Authenticated Auth Endpoints
         Route::middleware(['auth:sanctum', 'active'])->group(function () {
             Route::post('/logout', [AuthController::class, 'logout']);
+            Route::post('/refresh', [AuthController::class, 'refresh'])->withoutMiddleware(['auth:sanctum', 'active']);
             Route::get('/me', [AuthController::class, 'me']);
             Route::post('/2fa/setup', [AuthController::class, 'setup2fa']);
             Route::post('/2fa/enable', [AuthController::class, 'enable2fa']);
@@ -31,6 +32,8 @@ Route::prefix('v1')->group(function () {
     Route::prefix('student')->middleware(['auth:sanctum', 'active', 'role:STUDENT'])->group(function () {
         Route::get('/profile', [\App\Http\Controllers\Api\v1\StudentController::class, 'profile']);
         Route::put('/profile', [\App\Http\Controllers\Api\v1\StudentController::class, 'updateProfile']);
+        Route::post('/profile/photo', [\App\Http\Controllers\Api\v1\StudentController::class, 'uploadPhoto']);
+        Route::delete('/profile/photo', [\App\Http\Controllers\Api\v1\StudentController::class, 'deletePhoto']);
         Route::get('/status', [\App\Http\Controllers\Api\v1\StudentController::class, 'status']);
     });
 
@@ -63,6 +66,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/students/{student}/history', [\App\Http\Controllers\Api\v1\SecurityController::class, 'studentHistory']);
             Route::get('/history', [\App\Http\Controllers\Api\v1\SecurityController::class, 'history']);
             Route::get('/live-stream', [\App\Http\Controllers\Api\v1\SecurityController::class, 'liveStream']);
+            Route::post('/manual-movement', [\App\Http\Controllers\Api\v1\SecurityController::class, 'manualMovement'])->middleware('throttle:30,1');
         });
     });
 
@@ -72,6 +76,9 @@ Route::prefix('v1')->group(function () {
         Route::get('/students', [\App\Http\Controllers\Api\v1\AdminController::class, 'students']);
         Route::post('/students', [\App\Http\Controllers\Api\v1\AdminController::class, 'storeStudent']);
         Route::get('/students/{student}', [\App\Http\Controllers\Api\v1\AdminController::class, 'showStudent']);
+        Route::put('/students/{student}', [\App\Http\Controllers\Api\v1\AdminController::class, 'updateStudent']);
+        Route::post('/students/{student}/photo', [\App\Http\Controllers\Api\v1\AdminController::class, 'uploadStudentPhoto']);
+        Route::delete('/students/{student}/photo', [\App\Http\Controllers\Api\v1\AdminController::class, 'deleteStudentPhoto']);
         Route::post('/students/{student}/approve', [\App\Http\Controllers\Api\v1\AdminController::class, 'approveStudent']);
         Route::post('/students/{student}/reject', [\App\Http\Controllers\Api\v1\AdminController::class, 'rejectStudent']);
         Route::post('/students/{student}/suspend', [\App\Http\Controllers\Api\v1\AdminController::class, 'suspendStudent']);
@@ -83,7 +90,22 @@ Route::prefix('v1')->group(function () {
         Route::get('/gates', [\App\Http\Controllers\Api\v1\AdminController::class, 'gates']);
         Route::post('/gates', [\App\Http\Controllers\Api\v1\AdminController::class, 'storeGate']);
         Route::get('/movements', [\App\Http\Controllers\Api\v1\AdminController::class, 'movements']);
-        Route::get('/movements/export', [\App\Http\Controllers\Api\v1\AdminController::class, 'exportMovementsCsv']);
+        Route::get('/movements/export', [\App\Http\Controllers\Api\v1\AdminController::class, 'exportMovements']);
+        Route::get('/reports/movements', [\App\Http\Controllers\Api\v1\AdminController::class, 'movementReports']);
+        Route::get('/reports/students/{student}', [\App\Http\Controllers\Api\v1\AdminController::class, 'studentReport']);
         Route::get('/audit-logs', [\App\Http\Controllers\Api\v1\AdminController::class, 'auditLogs']);
     });
+
+    // Real-Time Notification Endpoints (All authenticated active roles)
+    Route::prefix('notifications')->middleware(['auth:sanctum', 'active'])->group(function () {
+        Route::get('/', [\App\Http\Controllers\Api\v1\NotificationController::class, 'index']);
+        Route::get('/unread-count', [\App\Http\Controllers\Api\v1\NotificationController::class, 'unreadCount']);
+        Route::post('/{id}/read', [\App\Http\Controllers\Api\v1\NotificationController::class, 'markAsRead']);
+        Route::post('/read-all', [\App\Http\Controllers\Api\v1\NotificationController::class, 'markAllAsRead']);
+    });
+
+    // Media Route (Profile Photos - authenticated, active session, role-checked inside MediaController)
+    Route::get('/media/students/{student}/photo', [\App\Http\Controllers\Api\v1\MediaController::class, 'studentPhoto'])
+        ->name('api.media.student-photo')
+        ->middleware(['auth:sanctum', 'active']);
 });

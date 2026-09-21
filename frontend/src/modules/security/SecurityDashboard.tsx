@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import QRCode from 'qrcode';
-import { ShieldCheck, RefreshCw, Radio, Search, Calendar, History, PowerOff, KeyRound, AlertCircle } from 'lucide-react';
+import { ShieldCheck, RefreshCw, Radio, Search, Calendar, History, PowerOff, KeyRound, AlertCircle, UserCheck } from 'lucide-react';
 import { Card } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
@@ -9,6 +9,7 @@ import { Modal } from '../../components/ui/Modal';
 import { TodayMovementsModal } from './TodayMovementsModal';
 import { StudentSearchModal } from './StudentSearchModal';
 import { SecurityHistoryModal } from './SecurityHistoryModal';
+import { ManualEntryModal } from './ManualEntryModal';
 import { apiClient, getErrorMessage, API_BASE_URL } from '../../api/client';
 import type { ApiResponse, Gate } from '../../types';
 
@@ -60,6 +61,7 @@ export const SecurityDashboard: React.FC = () => {
   const eventSourceRef = useRef<EventSource | null>(null);
 
   // Modals
+  const [isManualEntryOpen, setIsManualEntryOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isTodayOpen, setIsTodayOpen] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
@@ -263,7 +265,31 @@ export const SecurityDashboard: React.FC = () => {
       console.error('SSE initialization error:', err);
     }
 
+    const handleMovementRecorded = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      if (customEvent.detail) {
+        const m = customEvent.detail;
+        const newMovement: LiveMovementEvent = {
+          id: m.movement_id || m.id || Date.now(),
+          verification_code: m.verification_code || '',
+          type: m.type,
+          student_name: m.student?.name || 'Student',
+          roll_number: m.student?.roll_number || 'N/A',
+          gate_name: m.gate_name || activeDuty.gate_name || 'Gate',
+          display_time: new Date(m.server_timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          destination: m.destination,
+          purpose: m.purpose,
+          vehicle_present: m.vehicle_present,
+          vehicle_number: m.vehicle_number,
+        };
+        setLiveMovements((prev) => [newMovement, ...prev.filter((item) => item.id !== newMovement.id)].slice(0, 20));
+      }
+    };
+
+    window.addEventListener('smartgate:movement-recorded', handleMovementRecorded);
+
     return () => {
+      window.removeEventListener('smartgate:movement-recorded', handleMovementRecorded);
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
       }
@@ -521,8 +547,21 @@ export const SecurityDashboard: React.FC = () => {
         </div>
       </div>
 
+      {/* Manual Student Entry Action Button */}
+      <div className="pt-2">
+        <Button
+          variant="primary"
+          size="lg"
+          onClick={() => setIsManualEntryOpen(true)}
+          className="w-full font-black text-xs py-3.5 flex items-center justify-center gap-2 shadow-lg shadow-blue-600/25 uppercase tracking-wider"
+        >
+          <UserCheck className="h-5 w-5" />
+          <span>MANUAL STUDENT ENTRY</span>
+        </Button>
+      </div>
+
       {/* Action Buttons Grid matching specification */}
-      <div className="grid grid-cols-3 gap-2 pt-2">
+      <div className="grid grid-cols-3 gap-2 pt-1">
         <Button
           variant="secondary"
           size="md"
@@ -555,6 +594,11 @@ export const SecurityDashboard: React.FC = () => {
       </div>
 
       {/* Modals */}
+      <ManualEntryModal
+        isOpen={isManualEntryOpen}
+        onClose={() => setIsManualEntryOpen(false)}
+        assignedGateName={activeDuty.gate_name}
+      />
       <StudentSearchModal isOpen={isSearchOpen} onClose={() => setIsSearchOpen(false)} />
       <TodayMovementsModal isOpen={isTodayOpen} onClose={() => setIsTodayOpen(false)} gateId={activeDuty.gate_id} />
       <SecurityHistoryModal isOpen={isHistoryOpen} onClose={() => setIsHistoryOpen(false)} />

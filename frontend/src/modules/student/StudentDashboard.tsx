@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { useOutletContext } from 'react-router-dom';
-import { LogIn, LogOut, User as UserIcon, AlertCircle, BellOff, Clock, AlertTriangle, Lock } from 'lucide-react';
+import { LogIn, LogOut, User as UserIcon, AlertCircle, Clock, AlertTriangle, Lock } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { apiClient, getErrorMessage } from '../../api/client';
 import { Card } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
 import { Alert } from '../../components/ui/Alert';
 import { Badge } from '../../components/ui/Badge';
+import { Avatar } from '../../components/ui/Avatar';
 import { CameraQrScanner } from '../../components/shared/CameraQrScanner';
 import { MovementModal } from './MovementModal';
 import { ReceiptModal } from '../../components/shared/ReceiptModal';
@@ -152,18 +153,46 @@ export const StudentDashboard: React.FC = () => {
     <div className="flex flex-col flex-1 justify-between space-y-6 text-left">
       {/* Welcome & Student Info Banner */}
       <div>
-        <div className="flex items-start justify-between">
-          <div>
-            <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Welcome,</span>
-            <h2 className="text-2xl font-black text-slate-900 tracking-tight">{student?.name || user?.name}</h2>
-            <p className="text-xs font-mono font-medium text-slate-500 mt-0.5">
-              Roll No: <span className="font-bold text-slate-800">{student?.roll_number || 'Pending'}</span>
-            </p>
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => outletContext?.setShowProfile(true)}
+              className="group focus:outline-none transition transform active:scale-95"
+              title="Click to view/change profile photo"
+            >
+              <Avatar
+                src={student?.profile_photo_url}
+                name={student?.name || user?.name}
+                size="lg"
+                shape="rounded"
+                className="ring-2 ring-blue-500/30 group-hover:ring-blue-600 shadow-sm"
+              />
+            </button>
+            <div>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Welcome,</span>
+                <span
+                  className={`text-[10px] px-2 py-0.2 rounded-full font-bold uppercase tracking-wider ${
+                    student?.category === 'DAY_SCHOLAR'
+                      ? 'bg-amber-100 text-amber-800'
+                      : 'bg-indigo-100 text-indigo-800'
+                  }`}
+                >
+                  {student?.category === 'DAY_SCHOLAR' ? 'Day Scholar' : 'Hosteler'}
+                </span>
+              </div>
+              <h2 className="text-xl font-black text-slate-900 tracking-tight leading-tight">
+                {student?.name || user?.name}
+              </h2>
+              <p className="text-xs font-mono font-medium text-slate-500">
+                Roll No: <span className="font-bold text-slate-800">{student?.roll_number || 'Pending'}</span>
+              </p>
+            </div>
           </div>
           <div>
             {accountStatus === 'PENDING' && (
               <Badge variant="warning" size="md">
-                PENDING APPROVAL
+                PENDING
               </Badge>
             )}
             {accountStatus === 'ACTIVE' && (
@@ -268,15 +297,6 @@ export const StudentDashboard: React.FC = () => {
             </div>
           )}
         </Card>
-
-        {/* Institutional Notifications Roadmap Notice */}
-        <div className="mt-4 p-3 bg-slate-100/90 rounded-2xl border border-slate-200 flex items-start gap-2.5">
-          <BellOff className="h-4 w-4 text-slate-500 flex-shrink-0 mt-0.5" />
-          <div className="text-[11px] text-slate-600 leading-relaxed">
-            <strong className="text-slate-700 block">Institutional Notifications: Module Unavailable</strong>
-            The backend service for institutional notifications is part of the system migration roadmap and will be activated in an upcoming release.
-          </div>
-        </div>
 
         {/* Anti-spoofing Physical Verification Notice */}
         <div className="mt-3 p-3.5 bg-blue-50/70 rounded-2xl border border-blue-100 flex items-start gap-2.5">

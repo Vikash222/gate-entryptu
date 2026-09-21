@@ -5,6 +5,7 @@ import { useAuth } from '../../context/AuthContext';
 import { apiClient } from '../../api/client';
 import { Modal } from '../../components/ui/Modal';
 import { Button } from '../../components/ui/Button';
+import { NotificationBell } from '../../components/shared/NotificationBell';
 
 export const SecurityLayout: React.FC = () => {
   const { user, logout } = useAuth();
@@ -100,6 +101,7 @@ export const SecurityLayout: React.FC = () => {
                 OFF DUTY
               </span>
             )}
+            <NotificationBell variant="dark" />
             <button
               type="button"
               onClick={logout}

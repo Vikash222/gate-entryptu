@@ -79,6 +79,7 @@ class StudentRegistrationApprovalTest extends TestCase
             'name' => 'Rahul Sharma',
             'roll_number' => '2026/BTECH/CS/042',
             'student_id' => 'STU-2026-042',
+            'student_type' => 'HOSTELLER',
             'year' => 3,
             'program' => 'B.Tech Computer Science',
             'department' => 'Computer Science & Engineering',

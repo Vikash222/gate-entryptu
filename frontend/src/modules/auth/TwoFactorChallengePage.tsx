@@ -53,7 +53,7 @@ export const TwoFactorChallengePage: React.FC = () => {
       const data = response.data.data;
 
       if (data.token && data.user) {
-        login(data.token, data.user);
+        login(data.token, data.user, data.session_expires_at);
 
         if (data.user.role === 'STUDENT') {
           navigate('/student');

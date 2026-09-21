@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { TwoFactorSetupModal } from '../auth/TwoFactorSetupModal';
+import { NotificationBell } from '../../components/shared/NotificationBell';
 
 export const AdminLayout: React.FC = () => {
   const { user, logout, refreshUser } = useAuth();
@@ -112,9 +113,12 @@ export const AdminLayout: React.FC = () => {
             <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">SmartGate Core</span>
             <h2 className="text-sm font-bold text-slate-900">University Gate Management System</h2>
           </div>
-          <div className="flex items-center gap-3">
-            <span className="h-2 w-2 rounded-full bg-emerald-500" />
-            <span className="text-xs font-mono text-slate-500">Central DB Sync: Active</span>
+          <div className="flex items-center gap-4">
+            <NotificationBell variant="light" />
+            <div className="flex items-center gap-2 pl-3 border-l border-slate-200">
+              <span className="h-2 w-2 rounded-full bg-emerald-500" />
+              <span className="text-xs font-mono text-slate-500">Central DB Sync: Active</span>
+            </div>
           </div>
         </header>
 

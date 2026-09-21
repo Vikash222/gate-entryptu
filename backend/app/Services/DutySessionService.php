@@ -43,7 +43,7 @@ class DutySessionService
         }
 
         try {
-            return DB::transaction(function () use ($guard, $gate, $trimmedOtp, $deviceIdentifier, $ipAddress) {
+            $dutySession = DB::transaction(function () use ($guard, $gate, $trimmedOtp, $deviceIdentifier, $ipAddress) {
                 // Verify and burn the Admin Duty OTP
                 $otpRecord = $this->verifyAndBurnOtp($trimmedOtp, $guard->id, $gate->id);
 
@@ -89,8 +89,17 @@ class DutySessionService
                     user: $guard
                 );
 
+                $dutySession->setRelation('gate', $gate);
                 return $dutySession;
             });
+
+            try {
+                event(new \App\Events\SecurityDutyChanged('DUTY_ACTIVATED', $dutySession, $guard, $gate));
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('SecurityDutyChanged event failure: ' . $e->getMessage());
+            }
+
+            return $dutySession;
         } catch (InvalidArgumentException $e) {
             $this->auditService->log(
                 action: 'DUTY_OTP_VERIFICATION_FAILED',
@@ -154,6 +163,14 @@ class DutySessionService
             entityId: (string) $session->id,
             user: $actor ?? $session->user
         );
+
+        try {
+            $session->loadMissing(['user', 'gate']);
+            $event = ($actor && $actor->id !== $session->user_id) ? 'DUTY_FORCE_ENDED' : 'DUTY_ENDED';
+            event(new \App\Events\SecurityDutyChanged($event, $session, $session->user, $session->gate));
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('SecurityDutyChanged event failure: ' . $e->getMessage());
+        }
     }
 
     /**

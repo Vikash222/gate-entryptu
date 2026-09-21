@@ -3,6 +3,7 @@ import { Search, MapPin, Compass, Car, ChevronRight } from 'lucide-react';
 import { Modal } from '../../components/ui/Modal';
 import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
+import { Avatar } from '../../components/ui/Avatar';
 import { apiClient, getErrorMessage } from '../../api/client';
 import type { ApiResponse, StudentProfile, Movement } from '../../types';
 
@@ -20,9 +21,23 @@ export const StudentSearchModal: React.FC<StudentSearchModalProps> = ({ isOpen, 
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  const searchAbortControllerRef = React.useRef<AbortController | null>(null);
+
+  React.useEffect(() => {
+    return () => {
+      searchAbortControllerRef.current?.abort();
+    };
+  }, []);
+
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (query.trim().length < 2) return;
+
+    if (searchAbortControllerRef.current) {
+      searchAbortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    searchAbortControllerRef.current = controller;
 
     setIsLoading(true);
     setErrorMessage(null);
@@ -31,13 +46,19 @@ export const StudentSearchModal: React.FC<StudentSearchModalProps> = ({ isOpen, 
 
     try {
       const response = await apiClient.get<ApiResponse<StudentProfile[]>>(
-        `/security/students/search?query=${encodeURIComponent(query.trim())}`
+        `/security/students/search?query=${encodeURIComponent(query.trim())}`,
+        { signal: controller.signal }
       );
       setResults(response.data.data);
-    } catch (err) {
+    } catch (err: any) {
+      if (err?.name === 'CanceledError' || err?.code === 'ERR_CANCELED') {
+        return;
+      }
       setErrorMessage(getErrorMessage(err));
     } finally {
-      setIsLoading(false);
+      if (searchAbortControllerRef.current === controller) {
+        setIsLoading(false);
+      }
     }
   };
 
@@ -104,11 +125,21 @@ export const StudentSearchModal: React.FC<StudentSearchModalProps> = ({ isOpen, 
                   className="w-full py-3 px-2 flex items-center justify-between text-left hover:bg-slate-50 transition rounded-xl"
                 >
                   <div className="flex items-center gap-3">
-                    <div className="h-10 w-10 rounded-xl bg-slate-100 text-slate-700 flex items-center justify-center font-bold text-xs">
-                      {s.name.charAt(0)}
-                    </div>
+                    <Avatar
+                      src={s.profile_photo_url}
+                      name={s.name}
+                      size="md"
+                      shape="rounded"
+                    />
                     <div>
-                      <h5 className="font-bold text-slate-900 text-sm">{s.name}</h5>
+                      <div className="flex items-center gap-1.5">
+                        <h5 className="font-bold text-slate-900 text-sm">{s.name}</h5>
+                        {s.category === 'DAY_SCHOLAR' && (
+                          <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-purple-100 text-purple-700 border border-purple-200">
+                            Day Scholar
+                          </span>
+                        )}
+                      </div>
                       <p className="text-xs text-slate-500 font-mono">
                         {s.roll_number} &bull; {s.program || 'B.Tech'}
                       </p>
@@ -145,18 +176,37 @@ export const StudentSearchModal: React.FC<StudentSearchModalProps> = ({ isOpen, 
             </button>
 
             {/* Student Header Card */}
-            <div className="p-4 bg-slate-900 text-white rounded-2xl flex items-center justify-between">
-              <div>
-                <h4 className="font-extrabold text-base">{selectedStudent.name}</h4>
-                <p className="text-xs text-slate-300 font-mono">Roll: {selectedStudent.roll_number}</p>
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  {selectedStudent.program} &bull; {selectedStudent.department}
-                </p>
+            <div className="p-4 bg-slate-900 text-white rounded-2xl flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <Avatar
+                  src={selectedStudent.profile_photo_url}
+                  name={selectedStudent.name}
+                  size="lg"
+                  shape="rounded"
+                />
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h4 className="font-extrabold text-base">{selectedStudent.name}</h4>
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                        selectedStudent.category === 'DAY_SCHOLAR'
+                          ? 'bg-purple-900/60 text-purple-200 border border-purple-400/40'
+                          : 'bg-blue-900/60 text-blue-200 border border-blue-400/40'
+                      }`}
+                    >
+                      {selectedStudent.category === 'DAY_SCHOLAR' ? 'Day Scholar' : 'Hosteler'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-300 font-mono">Roll: {selectedStudent.roll_number}</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    {selectedStudent.program} &bull; {selectedStudent.department}
+                  </p>
+                </div>
               </div>
 
               <div
-                className={`px-3 py-1.5 rounded-xl font-black text-xs ${
-                  selectedStudent.current_status === 'INSIDE' ? 'bg-emerald-500' : 'bg-rose-500'
+                className={`px-3 py-1.5 rounded-xl font-black text-xs shrink-0 ${
+                  selectedStudent.current_status === 'INSIDE' ? 'bg-emerald-500 text-white' : 'bg-rose-500 text-white'
                 }`}
               >
                 {selectedStudent.current_status === 'INSIDE' ? '🟢 INSIDE' : '🔴 OUTSIDE'}

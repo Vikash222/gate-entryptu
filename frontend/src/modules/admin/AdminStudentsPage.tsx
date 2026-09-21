@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Plus,
   Search,
@@ -13,6 +13,10 @@ import {
   Phone,
   Mail,
   Calendar,
+  Camera,
+  Trash2,
+  Loader2,
+  UserCheck,
 } from 'lucide-react';
 import { Card } from '../../components/ui/Card';
 import { Button } from '../../components/ui/Button';
@@ -20,6 +24,7 @@ import { Input } from '../../components/ui/Input';
 import { Modal } from '../../components/ui/Modal';
 import { Alert } from '../../components/ui/Alert';
 import { Badge } from '../../components/ui/Badge';
+import { Avatar, clearPhotoCache } from '../../components/ui/Avatar';
 import { apiClient, getErrorMessage } from '../../api/client';
 import type { ApiResponse, StudentProfile, StudentAccountStatus } from '../../types';
 
@@ -29,6 +34,7 @@ export const AdminStudentsPage: React.FC = () => {
   const [students, setStudents] = useState<StudentProfile[]>([]);
   const [search, setSearch] = useState('');
   const [activeTab, setActiveTab] = useState<FilterTab>('ALL');
+  const [categoryFilter, setCategoryFilter] = useState<'ALL' | 'HOSTELER' | 'DAY_SCHOLAR'>('ALL');
   const [pendingCount, setPendingCount] = useState<number>(0);
   const [isLoading, setIsLoading] = useState(true);
   const [actionLoadingId, setActionLoadingId] = useState<number | null>(null);
@@ -37,6 +43,9 @@ export const AdminStudentsPage: React.FC = () => {
 
   // Selected Student for Full Verification Modal
   const [selectedStudent, setSelectedStudent] = useState<StudentProfile | null>(null);
+  const [adminPhotoUploading, setAdminPhotoUploading] = useState(false);
+  const [adminPhotoError, setAdminPhotoError] = useState<string | null>(null);
+  const adminFileInputRef = useRef<HTMLInputElement>(null);
 
   // Manual Add Student Modal Form
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -46,6 +55,7 @@ export const AdminStudentsPage: React.FC = () => {
     password: '',
     student_id: '',
     roll_number: '',
+    category: 'HOSTELER' as 'HOSTELER' | 'DAY_SCHOLAR',
     phone_number: '',
     program: 'B.Tech',
     department: 'Computer Science',
@@ -63,14 +73,15 @@ export const AdminStudentsPage: React.FC = () => {
       const params = new URLSearchParams();
       if (search.trim()) params.append('search', search.trim());
       if (activeTab !== 'ALL') params.append('status', activeTab);
+      if (categoryFilter !== 'ALL') params.append('category', categoryFilter);
 
-      const res = await apiClient.get<ApiResponse<{ data: StudentProfile[]; total?: number }>>(
-        `/admin/students?${params.toString()}`
-      );
+      const [res, pendingRes] = await Promise.all([
+        apiClient.get<ApiResponse<{ data: StudentProfile[]; total?: number }>>(
+          `/admin/students?${params.toString()}`
+        ),
+        apiClient.get<ApiResponse<{ total: number }>>('/admin/students?status=PENDING'),
+      ]);
       setStudents(res.data.data.data || []);
-
-      // Also check pending count for badge indicator
-      const pendingRes = await apiClient.get<ApiResponse<{ total: number }>>('/admin/students?status=PENDING');
       setPendingCount(pendingRes.data.data.total ?? 0);
     } catch (err) {
       setErrorMessage(getErrorMessage(err));
@@ -81,11 +92,65 @@ export const AdminStudentsPage: React.FC = () => {
 
   useEffect(() => {
     fetchStudents();
-  }, [activeTab]);
+  }, [activeTab, categoryFilter]);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     fetchStudents();
+  };
+
+  const handleAdminPhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!selectedStudent) return;
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 102400) {
+      setAdminPhotoError(`Profile photo must be 100 KB or smaller. (Selected file: ${(file.size / 1024).toFixed(1)} KB)`);
+      if (adminFileInputRef.current) adminFileInputRef.current.value = '';
+      return;
+    }
+
+    setAdminPhotoUploading(true);
+    setAdminPhotoError(null);
+
+    const data = new FormData();
+    data.append('profile_photo', file);
+
+    try {
+      const res = await apiClient.post<ApiResponse<{ student: StudentProfile }>>(
+        `/admin/students/${selectedStudent.id}/photo`,
+        data,
+        { headers: { 'Content-Type': 'multipart/form-data' } }
+      );
+      setSelectedStudent(res.data.data.student);
+      clearPhotoCache(selectedStudent.profile_photo_url || undefined);
+      setSuccessMessage('Student profile photo updated successfully.');
+      fetchStudents();
+    } catch (err) {
+      setAdminPhotoError(getErrorMessage(err));
+    } finally {
+      setAdminPhotoUploading(false);
+      if (adminFileInputRef.current) adminFileInputRef.current.value = '';
+    }
+  };
+
+  const handleAdminPhotoDelete = async () => {
+    if (!selectedStudent) return;
+    setAdminPhotoUploading(true);
+    setAdminPhotoError(null);
+    try {
+      const res = await apiClient.delete<ApiResponse<{ student: StudentProfile }>>(
+        `/admin/students/${selectedStudent.id}/photo`
+      );
+      clearPhotoCache(selectedStudent.profile_photo_url || undefined);
+      setSelectedStudent(res.data.data.student);
+      setSuccessMessage('Student profile photo removed successfully.');
+      fetchStudents();
+    } catch (err) {
+      setAdminPhotoError(getErrorMessage(err));
+    } finally {
+      setAdminPhotoUploading(false);
+    }
   };
 
   // Student Lifecycle Actions
@@ -187,6 +252,7 @@ export const AdminStudentsPage: React.FC = () => {
         password: '',
         student_id: '',
         roll_number: '',
+        category: 'HOSTELER',
         phone_number: '',
         program: 'B.Tech',
         department: 'Computer Science',
@@ -342,19 +408,31 @@ export const AdminStudentsPage: React.FC = () => {
             </button>
           </div>
 
-          {/* Search */}
-          <form onSubmit={handleSearchSubmit} className="flex gap-2">
-            <Input
-              placeholder="Search Roll No, Name, Phone..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              leftIcon={<Search className="h-4 w-4" />}
-              className="text-xs w-64"
-            />
-            <Button type="submit" size="md" className="text-xs font-bold px-4">
-              Filter
-            </Button>
-          </form>
+          {/* Category Filter & Search */}
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value as any)}
+              className="text-xs font-semibold px-2.5 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="ALL">All Categories</option>
+              <option value="HOSTELER">Hostelers Only</option>
+              <option value="DAY_SCHOLAR">Day Scholars Only</option>
+            </select>
+
+            <form onSubmit={handleSearchSubmit} className="flex gap-2">
+              <Input
+                placeholder="Search Roll No, Name, Phone..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                leftIcon={<Search className="h-4 w-4" />}
+                className="text-xs w-60"
+              />
+              <Button type="submit" size="md" className="text-xs font-bold px-4">
+                Filter
+              </Button>
+            </form>
+          </div>
         </div>
       </Card>
 
@@ -392,8 +470,29 @@ export const AdminStudentsPage: React.FC = () => {
                         )}
                       </td>
                       <td className="py-3 px-4">
-                        <div className="font-bold text-slate-800">{s.name}</div>
-                        {s.year && <div className="text-[10px] text-slate-400">Year {s.year}</div>}
+                        <div className="flex items-center gap-2.5">
+                          <Avatar
+                            src={s.profile_photo_url}
+                            name={s.name}
+                            size="sm"
+                            shape="rounded"
+                          />
+                          <div>
+                            <div className="font-bold text-slate-800 flex items-center gap-1.5 flex-wrap">
+                              <span>{s.name}</span>
+                              <span
+                                className={`px-1.5 py-0.2 rounded text-[9px] font-black uppercase tracking-wider ${
+                                  s.category === 'DAY_SCHOLAR'
+                                    ? 'bg-amber-100 text-amber-800'
+                                    : 'bg-indigo-100 text-indigo-800'
+                                }`}
+                              >
+                                {s.category === 'DAY_SCHOLAR' ? 'Day Scholar' : 'Hosteler'}
+                              </span>
+                            </div>
+                            {s.year && <div className="text-[10px] text-slate-400">Year {s.year}</div>}
+                          </div>
+                        </div>
                       </td>
                       <td className="py-3 px-4 text-slate-600">
                         <div>{s.program || 'General'}</div>
@@ -498,15 +597,75 @@ export const AdminStudentsPage: React.FC = () => {
         >
           <div className="space-y-4 pt-2 text-left">
             <div className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-200/80">
-              <div className="flex items-center gap-3">
-                <div className="h-12 w-12 rounded-2xl bg-blue-600/10 border border-blue-500/20 text-blue-600 flex items-center justify-center font-black text-base">
-                  {selectedStudent.name.charAt(0)}
+              <div className="flex items-center gap-3.5">
+                <div className="relative group shrink-0">
+                  <Avatar
+                    src={selectedStudent.profile_photo_url}
+                    name={selectedStudent.name}
+                    size="xl"
+                    shape="rounded"
+                    className="ring-2 ring-slate-200 shadow-sm"
+                  />
+                  {adminPhotoUploading && (
+                    <div className="absolute inset-0 bg-black/50 rounded-xl flex items-center justify-center text-white">
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                    </div>
+                  )}
                 </div>
-                <div>
-                  <h3 className="text-base font-bold text-slate-900">{selectedStudent.name}</h3>
+
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-base font-bold text-slate-900">{selectedStudent.name}</h3>
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
+                        selectedStudent.category === 'DAY_SCHOLAR'
+                          ? 'bg-amber-100 text-amber-800 border border-amber-200'
+                          : 'bg-indigo-100 text-indigo-800 border border-indigo-200'
+                      }`}
+                    >
+                      {selectedStudent.category === 'DAY_SCHOLAR' ? 'Day Scholar' : 'Hosteler'}
+                    </span>
+                  </div>
                   <p className="text-xs font-mono text-slate-500 font-semibold">
                     Roll: {selectedStudent.roll_number}
                   </p>
+
+                  {/* Admin Photo Controls */}
+                  <div className="flex items-center gap-2 pt-1">
+                    <input
+                      ref={adminFileInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      className="hidden"
+                      onChange={handleAdminPhotoUpload}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={adminPhotoUploading}
+                      onClick={() => adminFileInputRef.current?.click()}
+                      className="text-[11px] h-7 px-2.5 flex items-center gap-1"
+                    >
+                      <Camera className="h-3.5 w-3.5" />
+                      <span>{selectedStudent.profile_photo_url ? 'Replace Photo' : 'Upload Photo'}</span>
+                    </Button>
+                    {selectedStudent.profile_photo_url && (
+                      <button
+                        type="button"
+                        disabled={adminPhotoUploading}
+                        onClick={handleAdminPhotoDelete}
+                        className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 transition"
+                        title="Remove Photo"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                    <span className="text-[10px] text-slate-400">Max 100 KB</span>
+                  </div>
+                  {adminPhotoError && (
+                    <p className="text-[11px] text-rose-600 font-medium">{adminPhotoError}</p>
+                  )}
                 </div>
               </div>
               <div>{renderStatusBadge(selectedStudent.status)}</div>
@@ -514,6 +673,15 @@ export const AdminStudentsPage: React.FC = () => {
 
             {/* Profile Grid */}
             <div className="grid grid-cols-2 gap-3 text-xs">
+              <div className="p-3 bg-slate-50/70 rounded-xl border border-slate-200/60 space-y-1">
+                <span className="text-[10px] uppercase font-bold text-slate-400 flex items-center gap-1">
+                  <UserCheck className="h-3 w-3" /> Category
+                </span>
+                <p className="font-semibold text-slate-800">
+                  {selectedStudent.category === 'DAY_SCHOLAR' ? 'Day Scholar (Commuter)' : 'Hosteler (Campus Resident)'}
+                </p>
+              </div>
+
               <div className="p-3 bg-slate-50/70 rounded-xl border border-slate-200/60 space-y-1">
                 <span className="text-[10px] uppercase font-bold text-slate-400 flex items-center gap-1">
                   <GraduationCap className="h-3 w-3" /> Program & Year
@@ -559,7 +727,7 @@ export const AdminStudentsPage: React.FC = () => {
                 </p>
               </div>
 
-              <div className="p-3 bg-slate-50/70 rounded-xl border border-slate-200/60 space-y-1">
+              <div className="col-span-2 p-3 bg-slate-50/70 rounded-xl border border-slate-200/60 space-y-1">
                 <span className="text-[10px] uppercase font-bold text-slate-400">Gate Entry Access</span>
                 <p className={`font-semibold ${selectedStudent.status === 'ACTIVE' ? 'text-emerald-700' : 'text-amber-700'}`}>
                   {selectedStudent.status === 'ACTIVE' ? 'Authorized & Active' : 'Locked / Not Authorized'}
@@ -657,6 +825,19 @@ export const AdminStudentsPage: React.FC = () => {
               value={formData.student_id}
               onChange={(e) => setFormData({ ...formData, student_id: e.target.value.toUpperCase() })}
             />
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Student Category <span className="text-rose-500">*</span>
+              </label>
+              <select
+                className="w-full h-10 px-3 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500"
+                value={formData.category}
+                onChange={(e) => setFormData({ ...formData, category: e.target.value as 'HOSTELER' | 'DAY_SCHOLAR' })}
+              >
+                <option value="HOSTELER">Hosteler</option>
+                <option value="DAY_SCHOLAR">Day Scholar</option>
+              </select>
+            </div>
             <Input
               label="Login Password"
               type="password"

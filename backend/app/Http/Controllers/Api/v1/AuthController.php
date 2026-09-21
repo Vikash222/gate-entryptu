@@ -8,13 +8,16 @@ use App\Models\AuditLog;
 use App\Models\Student;
 use App\Models\User;
 use App\Services\AuditService;
+use App\Services\ProfilePhotoService;
 use App\Services\TotpService;
+use Laravel\Sanctum\PersonalAccessToken;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
 class AuthController extends Controller
@@ -23,7 +26,8 @@ class AuthController extends Controller
 
     public function __construct(
         protected AuditService $auditService,
-        protected TotpService $totpService
+        protected TotpService $totpService,
+        protected ProfilePhotoService $profilePhotoService
     ) {}
 
     public function login(Request $request): JsonResponse
@@ -95,7 +99,13 @@ class AuthController extends Controller
         }
 
         // Direct login
-        $token = $user->createToken('smartgate_auth')->plainTextToken;
+        $now = now('Asia/Kolkata');
+        $expiresAt = null;
+        if ($user->isStudent() || $user->isSecurity()) {
+            $expiresAt = $now->copy()->addHours(8);
+        }
+
+        $token = $user->createToken('smartgate_auth', ['*'], $expiresAt)->plainTextToken;
 
         $this->auditService->log(
             action: 'LOGIN',
@@ -108,6 +118,9 @@ class AuthController extends Controller
             'requires_2fa' => false,
             'token' => $token,
             'user' => $this->formatUserData($user),
+            'session_started_at' => $now->toIso8601String(),
+            'session_expires_at' => $expiresAt?->toIso8601String(),
+            'session_duration_seconds' => $expiresAt ? 8 * 3600 : null,
         ], 'Login successful.');
     }
 
@@ -163,7 +176,13 @@ class AuthController extends Controller
         RateLimiter::clear($throttleKey);
         Cache::forget("2fa_challenge_{$validated['challenge_token']}");
 
-        $token = $user->createToken('smartgate_auth')->plainTextToken;
+        $now = now('Asia/Kolkata');
+        $expiresAt = null;
+        if ($user->isStudent() || $user->isSecurity()) {
+            $expiresAt = $now->copy()->addHours(8);
+        }
+
+        $token = $user->createToken('smartgate_auth', ['*'], $expiresAt)->plainTextToken;
 
         $this->auditService->log(
             action: $isRecovery ? 'LOGIN_WITH_RECOVERY_CODE' : 'LOGIN_2FA_SUCCESS',
@@ -176,6 +195,9 @@ class AuthController extends Controller
             'requires_2fa' => false,
             'token' => $token,
             'user' => $this->formatUserData($user),
+            'session_started_at' => $now->toIso8601String(),
+            'session_expires_at' => $expiresAt?->toIso8601String(),
+            'session_duration_seconds' => $expiresAt ? 8 * 3600 : null,
         ], 'Two-factor authentication verified successfully.');
     }
 
@@ -209,12 +231,60 @@ class AuthController extends Controller
         return $this->success(null, 'Logged out successfully.');
     }
 
+    public function refresh(Request $request): JsonResponse
+    {
+        $tokenStr = $request->bearerToken();
+        if (!$tokenStr) {
+            return $this->error('No token provided.', null, 401);
+        }
+
+        $accessToken = \Laravel\Sanctum\PersonalAccessToken::findToken($tokenStr);
+        if (!$accessToken) {
+            return $this->error('Invalid or fully revoked token.', null, 401);
+        }
+
+        $user = $accessToken->tokenable;
+        if (!$user || !$user->isActive()) {
+            return $this->error('User account is inactive or suspended.', null, 401);
+        }
+
+        // Authoritative 8-hour check: reject expired tokens
+        if ($accessToken->expires_at && $accessToken->expires_at->isPast()) {
+            $accessToken->delete();
+            return $this->error('Your 8-hour session has expired. Please sign in again.', null, 401);
+        }
+
+        if (($user->isStudent() || $user->isSecurity()) && $accessToken->created_at && $accessToken->created_at->addHours(8)->isPast()) {
+            $accessToken->delete();
+            return $this->error('Your 8-hour session has expired. Please sign in again.', null, 401);
+        }
+
+        // Preserve original expires_at: never extend 8-hour session
+        $expiresAt = $accessToken->expires_at;
+
+        // Revoke the old token
+        $accessToken->delete();
+
+        // Issue a new one with same original expiry
+        $newToken = $user->createToken('smartgate_auth', ['*'], $expiresAt)->plainTextToken;
+
+        return $this->success([
+            'token' => $newToken,
+            'user' => $this->formatUserData($user),
+            'session_expires_at' => $expiresAt?->toIso8601String(),
+        ], 'Token refreshed successfully.');
+    }
+
     public function me(Request $request): JsonResponse
     {
         $user = $request->user();
+        $token = $user->currentAccessToken();
 
         return $this->success([
             'user' => $this->formatUserData($user),
+            'session_started_at' => $token?->created_at?->toIso8601String(),
+            'session_expires_at' => $token?->expires_at?->toIso8601String(),
+            'server_time' => now('Asia/Kolkata')->toIso8601String(),
         ], 'User profile loaded.');
     }
 
@@ -328,7 +398,10 @@ class AuthController extends Controller
                 'department' => $student->department,
                 'semester' => $student->semester,
                 'batch' => $student->batch,
+                'student_type' => $student->student_type,
+                'category' => $student->category,
                 'profile_photo' => $student->profile_photo,
+                'profile_photo_url' => $student->profile_photo_url,
                 'current_status' => $student->current_status,
                 'last_movement_at' => $student->last_movement_at?->toIso8601String(),
             ] : null;
@@ -343,10 +416,21 @@ class AuthController extends Controller
      */
     public function registerStudent(Request $request): JsonResponse
     {
+        // Allow fallback from category if student_type not explicitly sent
+        if (!$request->has('student_type') && $request->has('category')) {
+            $cat = strtoupper(trim((string) $request->input('category')));
+            if ($cat === 'HOSTELER' || $cat === 'HOSTELLER') {
+                $request->merge(['student_type' => 'HOSTELLER']);
+            } elseif ($cat === 'DAY_SCHOLAR') {
+                $request->merge(['student_type' => 'DAY_SCHOLAR']);
+            }
+        }
+
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:150'],
             'roll_number' => ['required', 'string', 'max:50', 'unique:students,roll_number'],
             'student_id' => ['nullable', 'string', 'max:50', 'unique:students,student_id'],
+            'student_type' => ['required', 'string', 'in:HOSTELLER,DAY_SCHOLAR'],
             'year' => ['required', 'integer', 'between:1,6'],
             'program' => ['required', 'string', 'max:100'],
             'department' => ['nullable', 'string', 'max:100'],
@@ -354,60 +438,102 @@ class AuthController extends Controller
             'phone_number' => ['required', 'string', 'max:25', 'unique:students,phone_number'],
             'password' => ['required', 'string', 'min:8', 'confirmed'],
         ], [
+            'student_type.required' => 'Please select Hosteller or Day Scholar.',
+            'student_type.in' => 'Student Type must be either HOSTELLER or DAY_SCHOLAR.',
             'roll_number.unique' => 'A student account with this Roll Number is already registered.',
             'student_id.unique' => 'A student account with this Student ID is already registered.',
             'email.unique' => 'A user account with this email address already exists.',
             'phone_number.unique' => 'A student account with this phone number is already registered.',
         ]);
 
+        $photoFile = $request->file('profile_photo');
+        if ($photoFile) {
+            $this->profilePhotoService->validateImage($photoFile);
+        }
+
         $studentId = !empty($validated['student_id']) ? trim($validated['student_id']) : trim($validated['roll_number']);
+        $storedPhotoPath = null;
 
-        return DB::transaction(function () use ($validated, $studentId) {
-            $user = User::create([
-                'name' => trim($validated['name']),
-                'email' => strtolower(trim($validated['email'])),
-                'password' => Hash::make($validated['password']),
-                'role' => User::ROLE_STUDENT,
-                'status' => User::STATUS_PENDING,
-            ]);
+        try {
+            $result = DB::transaction(function () use ($validated, $studentId, $photoFile, &$storedPhotoPath) {
+                $user = User::create([
+                    'name' => trim($validated['name']),
+                    'email' => strtolower(trim($validated['email'])),
+                    'password' => Hash::make($validated['password']),
+                    'role' => User::ROLE_STUDENT,
+                    'status' => User::STATUS_PENDING,
+                ]);
 
-            $student = Student::create([
-                'user_id' => $user->id,
-                'student_id' => $studentId,
-                'roll_number' => trim($validated['roll_number']),
-                'name' => trim($validated['name']),
-                'year' => (int) $validated['year'],
-                'email' => strtolower(trim($validated['email'])),
-                'phone_number' => trim($validated['phone_number']),
-                'program' => trim($validated['program']),
-                'department' => !empty($validated['department']) ? trim($validated['department']) : null,
-                'status' => Student::STATUS_PENDING,
-                'current_status' => Student::STATE_INSIDE,
-            ]);
+                $student = Student::create([
+                    'user_id' => $user->id,
+                    'student_id' => $studentId,
+                    'roll_number' => trim($validated['roll_number']),
+                    'name' => trim($validated['name']),
+                    'year' => (int) $validated['year'],
+                    'email' => strtolower(trim($validated['email'])),
+                    'phone_number' => trim($validated['phone_number']),
+                    'program' => trim($validated['program']),
+                    'department' => !empty($validated['department']) ? trim($validated['department']) : null,
+                    'student_type' => $validated['student_type'],
+                    'category' => ($validated['student_type'] === 'DAY_SCHOLAR') ? Student::CATEGORY_DAY_SCHOLAR : Student::CATEGORY_HOSTELER,
+                    'status' => Student::STATUS_PENDING,
+                    'current_status' => Student::STATE_INSIDE,
+                ]);
 
-            $this->auditService->log(
-                action: 'STUDENT_REGISTERED',
-                module: 'AUTH',
-                status: AuditLog::STATUS_SUCCESS,
-                metadata: [
-                    'student_id' => $student->id,
-                    'roll_number' => $student->roll_number,
-                    'email' => $student->email,
-                ],
-                entityType: Student::class,
-                entityId: (string) $student->id,
-                user: $user
-            );
+                if ($photoFile) {
+                    $storedPhotoPath = $this->profilePhotoService->processAndStore(
+                        file: $photoFile,
+                        student: $student,
+                        actor: $user
+                    );
+                }
 
-            return $this->created([
-                'student' => [
-                    'id' => $student->id,
-                    'roll_number' => $student->roll_number,
-                    'name' => $student->name,
-                    'email' => $student->email,
-                    'status' => $student->status,
-                ],
-            ], 'Registration submitted successfully. Your account is pending verification and approval by University Administration.');
-        });
+                $this->auditService->log(
+                    action: 'STUDENT_REGISTERED',
+                    module: 'AUTH',
+                    status: AuditLog::STATUS_SUCCESS,
+                    metadata: [
+                        'student_id' => $student->id,
+                        'roll_number' => $student->roll_number,
+                        'email' => $student->email,
+                        'student_type' => $student->student_type,
+                        'has_profile_photo' => (bool) $student->profile_photo,
+                    ],
+                    entityType: Student::class,
+                    entityId: (string) $student->id,
+                    user: $user
+                );
+
+                return [$student, $user];
+            });
+        } catch (\Throwable $e) {
+            if ($storedPhotoPath && Storage::disk('local')->exists($storedPhotoPath)) {
+                Storage::disk('local')->delete($storedPhotoPath);
+            }
+            throw $e;
+        }
+
+        [$student, $user] = $result;
+
+        try {
+            event(new \App\Events\StudentRegistered($student, $user));
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('StudentRegistered event dispatch failure: ' . $e->getMessage());
+        }
+
+        return $this->created([
+            'student' => [
+                'id' => $student->id,
+                'roll_number' => $student->roll_number,
+                'student_id' => $student->student_id,
+                'name' => $student->name,
+                'email' => $student->email,
+                'student_type' => $student->student_type,
+                'category' => $student->category,
+                'profile_photo' => $student->profile_photo,
+                'profile_photo_url' => $student->profile_photo_url,
+                'status' => $student->status,
+            ],
+        ], 'Registration submitted successfully. Your account is pending verification and approval by University Administration.');
     }
 }

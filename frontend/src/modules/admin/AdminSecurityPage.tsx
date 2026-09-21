@@ -78,14 +78,25 @@ export const AdminSecurityPage: React.FC = () => {
     isMountedRef.current = true;
     fetchGuards(true);
 
-    // Auto-polling every 4 seconds to immediately reflect duty changes from security phones
+    // Auto-polling every 4 seconds to immediately reflect duty changes from security phones, paused when tab is inactive
     const pollInterval = setInterval(() => {
-      fetchGuards(false);
+      if (typeof document !== 'undefined' && !document.hidden) {
+        fetchGuards(false);
+      }
     }, 4000);
+
+    const handleVisibilityChange = () => {
+      if (typeof document !== 'undefined' && !document.hidden) {
+        fetchGuards(false);
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       isMountedRef.current = false;
       clearInterval(pollInterval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, []);
 
